@@ -1,0 +1,451 @@
+// =================================================================================
+// Dynamic World Urban Growth Monitoring Code
+// =================================================================================
+
+// Initialize the area of interest
+var aoi = geometry;
+Map.centerObject(aoi, 11);
+
+// Define time periods with clearer variable names
+var beforePeriod = {
+  start: '2022-01-01',
+  end: '2022-12-31'
+};
+
+var afterPeriod = {
+  start: '2025-01-01',
+  end: '2025-06-10'
+};
+
+// =================================================================================
+// Load and Process Dynamic World Data
+// =================================================================================
+
+// Load the Dynamic World collection
+var dynamicWorld = ee.ImageCollection('GOOGLE/DYNAMICWORLD/V1')
+                    .filterBounds(aoi);
+
+// Select multiple bands for comprehensive analysis
+var built = dynamicWorld.select('built');
+var trees = dynamicWorld.select('trees');
+var water = dynamicWorld.select('water');
+
+// Create probability composites for both periods
+var beforeBuiltProb = built.filterDate(beforePeriod.start, beforePeriod.end).mean();
+var afterBuiltProb = built.filterDate(afterPeriod.start, afterPeriod.end).mean();
+
+// Calculate built area change
+var builtChange = afterBuiltProb.subtract(beforeBuiltProb);
+
+// =================================================================================
+// Enhanced Change Detection with Multiple Thresholds
+// =================================================================================
+
+// Define multiple change thresholds for nuanced visualization
+var minorGrowth = builtChange.gt(0.10).and(builtChange.lte(0.20));
+var moderateGrowth = builtChange.gt(0.20).and(builtChange.lte(0.35));
+var majorGrowth = builtChange.gt(0.35);
+
+// Create a composite change image with different intensity levels
+var growthIntensity = ee.Image(0)
+  .where(minorGrowth, 1)
+  .where(moderateGrowth, 2)
+  .where(majorGrowth, 3)
+  .selfMask();
+
+// Create a binary mask for all growth areas
+var allGrowth = builtChange.gt(0.10).selfMask();
+
+// =================================================================================
+// Load High-Resolution Imagery for Context
+// =================================================================================
+
+// Load Sentinel-2 imagery for visual context
+var s2 = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+  .filterBounds(aoi)
+  .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20));
+
+// Create cloud-free composites
+var beforeS2 = s2.filterDate(beforePeriod.start, beforePeriod.end)
+  .median()
+  .select(['B4', 'B3', 'B2', 'B8', 'B11']);
+
+var afterS2 = s2.filterDate(afterPeriod.start, afterPeriod.end)
+  .median()
+  .select(['B4', 'B3', 'B2', 'B8', 'B11']);
+
+// =================================================================================
+// Create Visualizations
+// =================================================================================
+
+// Define color palettes
+var growthPalette = ['#00FF00', '#FFFF00', '#FF8C00', '#FF0000']; // Bright neon colors
+var contrastPalette = ['#FF00FF', '#00FFFF', '#FFFF00']; // High contrast colors
+var probabilityPalette = ['#f7fbff', '#deebf7', '#c6dbef', '#9ecae1', '#6baed6', '#4292c6', '#2171b5', '#08519c', '#08306b'];
+var ndviPalette = ['#d73027', '#f46d43', '#fdae61', '#fee090', '#ffffbf', '#e0f3f8', '#abd9e9', '#74add1', '#4575b4'];
+
+// Visualization parameters
+var rgbVis = {
+  min: 0,
+  max: 2500,
+  bands: ['B4', 'B3', 'B2'],
+  gamma: 1.2
+};
+
+var darkRgbVis = {
+  min: 0,
+  max: 1500,
+  bands: ['B4', 'B3', 'B2'],
+  gamma: 1.5
+};
+
+var falseColorVis = {
+  min: 0,
+  max: 4000,
+  bands: ['B8', 'B4', 'B3']
+};
+
+var growthVis = {
+  min: 0,
+  max: 3,
+  palette: growthPalette
+};
+
+var highContrastGrowthVis = {
+  min: 1,
+  max: 3,
+  palette: contrastPalette
+};
+
+var changeVis = {
+  min: -0.3,
+  max: 0.3,
+  palette: ['#0000FF', '#FFFFFF', '#FF0000']
+};
+
+var probVis = {
+  min: 0,
+  max: 1,
+  palette: probabilityPalette
+};
+
+// =================================================================================
+// Calculate Additional Indices
+// =================================================================================
+
+// Calculate NDVI for vegetation context
+var ndviBefore = beforeS2.normalizedDifference(['B8', 'B4']).rename('NDVI');
+var ndviAfter = afterS2.normalizedDifference(['B8', 'B4']).rename('NDVI');
+var ndviChange = ndviAfter.subtract(ndviBefore);
+
+// Calculate built-up index (NDBI)
+var ndbiBefore = beforeS2.normalizedDifference(['B11', 'B8']).rename('NDBI');
+var ndbiAfter = afterS2.normalizedDifference(['B11', 'B8']).rename('NDBI');
+
+// =================================================================================
+// Create Styled Layers
+// =================================================================================
+
+// Create darkened base imagery for better contrast
+var darkenedAfterS2 = afterS2.visualize(darkRgbVis);
+var brighterAfterS2 = afterS2.visualize(rgbVis);
+
+// Base imagery layers
+Map.addLayer(beforeS2, rgbVis, 'Before: Natural Color', false);
+Map.addLayer(afterS2, rgbVis, 'After: Natural Color', false);
+Map.addLayer(beforeS2, falseColorVis, 'Before: False Color Infrared', false);
+Map.addLayer(afterS2, falseColorVis, 'After: False Color Infrared', false);
+
+// Probability layers with opacity
+Map.addLayer(beforeBuiltProb, probVis, 'Before: Built Probability', false, 0.7);
+Map.addLayer(afterBuiltProb, probVis, 'After: Built Probability', false, 0.7);
+
+// Change detection layers
+Map.addLayer(builtChange, changeVis, 'Built Area Change (Raw)', false, 0.8);
+
+// High contrast growth visualization with outline effect
+var growthOutline = growthIntensity.focal_max(2, 'circle', 'pixels');
+Map.addLayer(growthOutline, {min: 1, max: 3, palette: ['#000000']}, 'Growth Outline', true);
+Map.addLayer(growthIntensity, growthVis, 'Urban Growth Intensity', true);
+
+// Alternative high-contrast visualization
+Map.addLayer(growthIntensity, highContrastGrowthVis, 'High Contrast Growth', false);
+
+// Vegetation context
+Map.addLayer(ndviChange, {min: -0.3, max: 0.3, palette: ndviPalette}, 'NDVI Change', false, 0.7);
+
+// Create a hillshade effect for terrain context (if SRTM is available)
+var srtm = ee.Image('USGS/SRTMGL1_003');
+var hillshade = ee.Terrain.hillshade(srtm);
+Map.addLayer(hillshade, {min: 0, max: 255}, 'Hillshade', false, 0.3);
+
+// =================================================================================
+// Add Styled Boundaries and Context
+// =================================================================================
+
+// Create a styled boundary for the AOI
+var aoiOutline = ee.Image().byte().paint({
+  featureCollection: ee.FeatureCollection([ee.Feature(aoi)]),
+  color: 1,
+  width: 3
+});
+
+Map.addLayer(aoiOutline, {palette: '#00FFFF'}, 'Study Area Boundary', true);
+
+// =================================================================================
+// Calculate and Display Statistics
+// =================================================================================
+
+// Calculate area statistics
+var pixelArea = ee.Image.pixelArea();
+
+// Calculate area for each growth category separately
+var minorGrowthArea = minorGrowth.multiply(pixelArea).divide(10000).rename('area');
+var moderateGrowthArea = moderateGrowth.multiply(pixelArea).divide(10000).rename('area');
+var majorGrowthArea = majorGrowth.multiply(pixelArea).divide(10000).rename('area');
+
+// Calculate total areas
+var minorArea = minorGrowthArea.reduceRegion({
+  reducer: ee.Reducer.sum(),
+  geometry: aoi,
+  scale: 10,
+  maxPixels: 1e9
+});
+
+var moderateArea = moderateGrowthArea.reduceRegion({
+  reducer: ee.Reducer.sum(),
+  geometry: aoi,
+  scale: 10,
+  maxPixels: 1e9
+});
+
+var majorArea = majorGrowthArea.reduceRegion({
+  reducer: ee.Reducer.sum(),
+  geometry: aoi,
+  scale: 10,
+  maxPixels: 1e9
+});
+
+// Create a formatted statistics dictionary
+var stats = ee.Dictionary({
+  'Minor Growth (15-25%)': ee.Number(minorArea.get('area')).format('%.2f'),
+  'Moderate Growth (25-50%)': ee.Number(moderateArea.get('area')).format('%.2f'),
+  'Major Growth (>50%)': ee.Number(majorArea.get('area')).format('%.2f'),
+  'Total New Urban Area': ee.Number(minorArea.get('area'))
+    .add(moderateArea.get('area'))
+    .add(majorArea.get('area'))
+    .format('%.2f')
+});
+
+// Print statistics
+print('Urban Growth Statistics (hectares):', stats);
+
+// Also calculate percentage of AOI affected
+var aoiArea = aoi.area({maxError: 1}).divide(10000); // Convert to hectares with error margin
+var totalGrowthArea = ee.Number(minorArea.get('area'))
+  .add(moderateArea.get('area'))
+  .add(majorArea.get('area'));
+  
+var percentageAffected = totalGrowthArea.divide(aoiArea).multiply(100);
+
+// Create a summary panel for statistics
+var statsPanel = ui.Panel({
+  style: {
+    position: 'bottom-right',
+    padding: '8px 15px',
+    backgroundColor: 'rgba(255, 255, 255, 0.9)',
+    width: '300px'
+  }
+});
+
+var statsTitle = ui.Label({
+  value: 'Growth Statistics',
+  style: {
+    fontWeight: 'bold',
+    fontSize: '16px',
+    margin: '0 0 8px 0',
+    color: '#333'
+  }
+});
+
+statsPanel.add(statsTitle);
+
+// Add statistics to panel when computed
+stats.evaluate(function(result) {
+  for (var key in result) {
+    var statLabel = ui.Label({
+      value: key + ': ' + result[key] + ' ha',
+      style: {fontSize: '14px', margin: '2px 0'}
+    });
+    statsPanel.add(statLabel);
+  }
+});
+
+percentageAffected.evaluate(function(percent) {
+  var percentLabel = ui.Label({
+    value: 'Coverage: ' + percent.toFixed(2) + '% of study area',
+    style: {
+      fontSize: '14px',
+      margin: '8px 0 0 0',
+      fontWeight: 'bold',
+      color: '#FF4500'
+    }
+  });
+  statsPanel.add(percentLabel);
+});
+
+Map.add(statsPanel);
+
+print('Percentage of study area with new urban growth:', percentageAffected.format('%.2f'), '%');
+
+// =================================================================================
+// Create a Composite Visualization
+// =================================================================================
+
+// Create multiple composite options for better visibility
+
+// Option 1: Darkened background with bright overlays
+var darkComposite = darkenedAfterS2
+  .blend(growthIntensity.visualize(growthVis).updateMask(growthIntensity));
+
+// Option 2: Create a glowing effect for growth areas
+var glowEffect = growthIntensity.focal_max(3, 'circle', 'pixels');
+var glowComposite = brighterAfterS2
+  .blend(glowEffect.visualize({min: 1, max: 3, palette: ['#FFFF00', '#FF8C00', '#FF0000'], opacity: 0.6}))
+  .blend(growthIntensity.visualize(growthVis).updateMask(growthIntensity));
+
+// Option 3: Black background with neon growth
+var blackBackground = ee.Image([0, 0, 0]).visualize({min: 0, max: 1});
+var neonComposite = blackBackground
+  .blend(brighterAfterS2.updateMask(allGrowth.unmask(0).not()))
+  .blend(growthIntensity.visualize({
+    min: 1, 
+    max: 3, 
+    palette: ['#00FF00', '#FFFF00', '#FF00FF']
+  }).updateMask(growthIntensity));
+
+// Option 4: Highlighted growth with shadow effect
+var shadow = growthIntensity.focal_max(5, 'circle', 'pixels');
+var shadowComposite = afterS2.visualize(rgbVis)
+  .blend(shadow.visualize({palette: ['#000000'], opacity: 0.5}).updateMask(shadow))
+  .blend(growthIntensity.visualize({
+    min: 1,
+    max: 3,
+    palette: ['#00FF00', '#FFFF00', '#FF0000']
+  }).updateMask(growthIntensity));
+
+Map.addLayer(darkComposite, {}, 'Composite: Dark Background', false);
+Map.addLayer(glowComposite, {}, 'Composite: Glow Effect', true);
+Map.addLayer(neonComposite, {}, 'Composite: Neon on Black', false);
+Map.addLayer(shadowComposite, {}, 'Composite: Shadow Effect', false);
+
+// =================================================================================
+// Add Legend
+// =================================================================================
+
+// Create a legend for growth intensity
+var legend = ui.Panel({
+  style: {
+    position: 'bottom-left',
+    padding: '8px 15px',
+    backgroundColor: 'rgba(255, 255, 255, 0.9)'
+  }
+});
+
+var legendTitle = ui.Label({
+  value: 'Urban Growth Intensity',
+  style: {
+    fontWeight: 'bold',
+    fontSize: '16px',
+    margin: '0 0 4px 0',
+    color: '#333'
+  }
+});
+
+legend.add(legendTitle);
+
+var makeRow = function(color, name) {
+  var colorBox = ui.Label({
+    style: {
+      backgroundColor: color,
+      padding: '8px',
+      margin: '0 5px 0 0',
+      border: '1px solid #999'
+    }
+  });
+  
+  var description = ui.Label({
+    value: name,
+    style: {margin: '0 0 4px 6px', fontSize: '14px'}
+  });
+  
+  return ui.Panel({
+    widgets: [colorBox, description],
+    layout: ui.Panel.Layout.Flow('horizontal')
+  });
+};
+
+legend.add(makeRow('#00FF00', 'Minor Growth (10-20%)'));
+legend.add(makeRow('#FFFF00', 'Moderate Growth (20-35%)'));
+legend.add(makeRow('#FF0000', 'Major Growth (>35%)'));
+
+Map.add(legend);
+
+// =================================================================================
+// Add Title Panel
+// =================================================================================
+
+var title = ui.Panel({
+  style: {
+    position: 'top-center',
+    padding: '8px 15px',
+    backgroundColor: 'rgba(255, 255, 255, 0.9)'
+  }
+});
+
+var titleLabel = ui.Label({
+  value: 'Dynamic World Urban Growth Analysis',
+  style: {
+    fontWeight: 'bold',
+    fontSize: '20px',
+    color: '#333'
+  }
+});
+
+var subtitleLabel = ui.Label({
+  value: 'Comparing ' + beforePeriod.start + ' to ' + afterPeriod.end,
+  style: {
+    fontSize: '14px',
+    color: '#666'
+  }
+});
+
+title.add(titleLabel);
+title.add(subtitleLabel);
+Map.add(title);
+
+// =================================================================================
+// Export Options (Optional)
+// =================================================================================
+
+// Export the growth intensity image
+Export.image.toDrive({
+  image: growthIntensity,
+  description: 'urban_growth_intensity',
+  folder: 'earth_engine_exports',
+  region: aoi,
+  scale: 10,
+  maxPixels: 1e9
+});
+
+// Export the composite visualization
+Export.image.toDrive({
+  image: composite,
+  description: 'urban_growth_composite',
+  folder: 'earth_engine_exports',
+  region: aoi,
+  scale: 10,
+  maxPixels: 1e9
+});
+
+print('Enhanced visualization complete! Use the layer panel to explore different visualizations.');
